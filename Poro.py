@@ -1,33 +1,33 @@
 from domains_and_boundaries import *
 from numpy import zeros, where, linspace, ones, array, loadtxt
-import scipy.interpolate as Spline
+import numpy as np
 import sys
+import scipy.interpolate as Spline
 set_log_active(False)
 parameters['allow_extrapolation']=True
 
 
+
 # Refinement level of Mesh and Young's Modulus
 
-RL = '1'       # Or sys.argv[1] 
-EkPa = '62500'
-
+RL = '1'          # Or sys.argv[1]
+EkPa = '5000'
 ref_level = int(RL)
 E = Constant(float(EkPa))
 
-print 'ref: ',RL
-print 'E: ',EkPa
 
-ufile = File("RESULTS/reversed%s_E%s_3mm/velocity.pvd"%(RL,EkPa)) # xdmf
-pfile = File("RESULTS/reversed%s_E%s_3mm/pressure.pvd"%(RL,EkPa))
-dfile = File("RESULTS/reversed%s_E%s_3mm/dU.pvd"%(RL,EkPa))
-tfile = File("RESULTS/reversed%s_E%s_3mm/U.pvd"%(RL,EkPa))
-
+ufile = File("RESULTS/Brev%s_E%s_1mm_dt005/velocity.pvd"%(RL,EkPa)) # xdmf
+pfile = File("RESULTS/Brev%s_E%s_1mm_dt005/pressure.pvd"%(RL,EkPa))
+dfile = File("RESULTS/Brev%s_E%s_1mm_dt005/dU.pvd"%(RL,EkPa))
+tfile = File("RESULTS/Brev%s_E%s_1mm_dt005/U.pvd"%(RL,EkPa))
+qfile = File("RESULTS/Brev%s_E%s_1mm_dt005/q.pvd"%(RL,EkPa))
 
 # PHYSICAL PARAMETERS
+
 # FLUID
-rho_f = Constant(1./1000)		# [g/mm]
-nu_f = Constant(0.658)			# [mm**2/s]
-mu_f = Constant(nu_f*rho_f)		# [g/(mm*s)]
+rho_f = Constant(1./1000)		# g/mm
+nu_f = Constant(0.658)			# mm**2/s
+mu_f = Constant(nu_f*rho_f)		# g/(mm*s)
 
 # SOLID
 Pr = 0.479
@@ -36,18 +36,14 @@ lamda = Constant(E*Pr/((1.0+Pr)*(1.0-2*Pr)))
 mu_s = Constant(E/(2*(1.0+Pr)))
 
 # MESH
-Nx = 18*ref_level
-Ny = 30*ref_level
-P1 = Point(-9,0)
-P2 = Point(9,60)
-mesh = RectangleMesh(P1,P2,Nx,Ny)
-LEN = len(mesh.coordinates())
+P0 = Point(-9,0)
+P1 = Point(9,60)
+mesh = RectangleMesh(P0,P1,ref_level*18,ref_level*30)
 
 SD = MeshFunction('size_t', mesh, mesh.topology().dim())
 SD.set_all(0)
 Solid().mark(SD,1)
-#CSC().mark(SD,1)  #Remove comment for solid cord
-
+#CSC().mark(SD,1)#Remove comment for solid cord
 
 # DEFINING BOUNDARIES
 boundaries = FacetFunction("size_t",mesh)
@@ -62,15 +58,17 @@ Fluid_walls().mark(boundaries,7)
 CSC_bnd().mark(boundaries,6)
 
 
-dt = 0.002
+dt = 0.0005
 T = 5
+
 
 # TEST AND TRIALFUNCTIONS
 V = VectorFunctionSpace(mesh,'CG',2)
 P = FunctionSpace(mesh,'CG',1)
-W = VectorFunctionSpace(mesh,'CG', 1)
+W = VectorFunctionSpace(mesh,'CG', 2)
 VPW = MixedFunctionSpace([V,P,W])
-print 'dofs: ' ,VPW.dim()
+dim = VPW.dim()
+print 'dofs: ', dim
 v,p,w = TrialFunctions(VPW)
 phi,eta,psi = TestFunctions(VPW)
 
@@ -89,11 +87,13 @@ pres = np.append(pres,pres[1])
 t_pres = np.append(t_pres,t_pres[-1]+t_pres[1])
 applied_p = Spline.PchipInterpolator(t_pres,pres)
 
+
 class applied_pres(Expression):
 	def __init__(self):
 		self.t = 0
 		self.amp = 1
 	def eval(self,value,x):
+		
 		period = t_pres[-2]
 		cycle_t = self.t
 		while cycle_t>=period:
@@ -103,16 +103,16 @@ class applied_pres(Expression):
 		value[0] = self.amp*applied_p(cycle_t)
 
 
-pressure = Expression(('amp*sin(2*pi*t)'),t=0,amp=1)#applied_pres()
+pressure = Expression('amp*sin(2*pi*t)',t=0,amp=1)#applied_pres()
 
 bcv3 = DirichletBC(VPW.sub(0),noslip,boundaries,3) # Solid in
-bcv4 = DirichletBC(VPW.sub(0),noslip,boundaries,4) # Fluid out
 bcv5 = DirichletBC(VPW.sub(0),noslip,boundaries,5) # Solid out
-bcv6 = DirichletBC(VPW.sub(0),noslip,boundaries,6) # Interface
 bcv7 = DirichletBC(VPW.sub(0),noslip,boundaries,7) # Fluid walls
 
 
-bcv = [bcv3, bcv5, bcv7]
+
+
+bcv = [bcv3,bcv5,bcv7]
 
 
 # SOLID
@@ -130,10 +130,13 @@ bcw = [bcw1,bcw2,bcw3,bcw4,bcw5,bcw7]
 
 # CREATE FUNCTIONS
 v0 = Function(V)
+w0 = Function(W)
 v1 = Function(V)
-U1 = Function(W)
-
+U = Function(W)
+w1 = Function(W)
+q = Function(V)
 VPW_ = Function(VPW)
+
 
 k = Constant(dt)
 n = FacetNormal(mesh)
@@ -145,42 +148,60 @@ ds = Measure('ds')[boundaries]
 dx_f = dx(0,subdomain_data=SD)
 dx_s = dx(1,subdomain_data=SD)
 
-
 def sigma_dev(U):
 	return 2*mu_s*sym(grad(U)) + lamda*tr(sym(grad(U)))*Identity(2)
 
+def sigma_f(v):
+	return 2*mu_f*sym(grad(v))
 
 delta = 1e-8
+penalty = 0.01*mesh.hmin()
+poro = Constant(0.2)
+K_D = K_perm/mu_f
+rho_p = Constant(rho_s*(1-poro) + rho_f*poro)
 
 # VARIATIONAL FORMULATION
 
 # SOLID
-U = U1 + k*v      # Implicit Displacement scheme (v is used to satisfy BB)
 
-D = inner(sigma_dev(U),grad(phi))*dx_s
+aMS = rho_p/k*inner(w,phi)*dx_s \
+	+ rho_p*inner(grad(w0)*w,phi)*dx_s \
+	+ k*inner(sigma_dev(w),grad(phi))*dx_s \
+	- inner(p,div(phi))*dx_s
 
-aMS = rho_s/k*inner(v,phi)*dx_s \
-	+ rho_s*inner(grad(v0)*v,phi)*dx_s \
-	+ lhs(D)
-
-LMS = rho_s/k*inner(v1,phi)*dx_s \
-	+ rhs(D)
-
-aDS = 1/delta*inner(v,psi)*dx_s - 1/delta*inner(w,psi)*dx_s
+LMS = rho_p/k*inner(w1,phi)*dx_s - \
+	inner(sigma_dev(U),grad(phi))*dx_s
 
 
 
-aS = aMS + aDS
-LS = LMS
+#v - total velocity flux, not experienced velocity
+# filtration vel: q = -K*grad(p) - K*rho_f*dw/dt 
+# v = w_s + q
+# v = w_s - K*grad(p) - K*rho_f*dw/dt
+# div (v) = 0
+
+aDS = 1/delta*inner(v,psi)*dx_s \
+	- 1/delta*inner(w,psi)*dx_s \
+	+ 1/delta*K_D*inner(grad(p),psi)*dx_s \
+	+ 1/delta*rho_f*K_D/k*inner(w,psi)*dx_s \
+	+ 1/delta*rho_f*K_D*inner(grad(w0)*w,psi)*dx_s
+
+LDS = 1/delta*rho_f*K_D/k*inner(w1,psi)*dx_s
+
+
+aCS = -inner(div(v),eta)*dx_s
+
+aS = aMS + aDS + aCS
+LS = LMS + LDS
+
+
 
 # FLUID
-penalty = 0.01*mesh.hmin()
 
-
-aMF = rho_f/k*inner(v,phi)*dx_f \
-	+ rho_f*inner(grad(v0)*(v-w),phi)*dx_f \
-	- inner(p,div(phi))*dx_f \
-	+ 2*mu_f*inner(sym(grad(v)),grad(phi))*dx_f \
+aMF = rho_f/k*inner(v,phi)*dx_f + \
+	rho_f*inner(grad(v0)*(v-w),phi)*dx_f - \
+	 inner(p,div(phi))*dx_f + \
+	2*mu_f*inner(sym(grad(v)),sym(grad(phi)))*dx_f \
 	- mu_f*inner(grad(v).T*n,phi)*ds(1) \
 	- mu_f*inner(grad(v).T*n,phi)*ds(2) \
 	- mu_f*inner(grad(v).T*n,phi)*ds(4) \
@@ -188,63 +209,77 @@ aMF = rho_f/k*inner(v,phi)*dx_f \
 	+ penalty**-2*(inner(v,phi)-inner(dot(v,n),dot(phi,n)))*ds(2) \
 	+ penalty**-2*(inner(v,phi)-inner(dot(v,n),dot(phi,n)))*ds(4)
 
+
+
 LMF = rho_f/k*inner(v1,phi)*dx_f - \
-	inner(pressure*n,phi)*ds(1) - \
-	inner(pressure*n,phi)*ds(2)
+	  inner(pressure*n,phi)*ds(1) - \
+	  inner(pressure*n,phi)*ds(2) + \
+	  inner(pressure*n,phi)*ds(4)
 
 aDF = k*inner(grad(w),grad(psi))*dx_f \
 	- k*inner(grad(w('-'))*n('-'),psi('-'))*dS(6)
-LDF = -inner(grad(U1),grad(psi))*dx_f \
-	+ inner(grad(U1('-'))*n('-'),psi('-'))*dS(6)
+LDF = -inner(grad(U),grad(psi))*dx_f \
+	+ inner(grad(U('-'))*n('-'),psi('-'))*dS(6)
 
 aCF = -inner(div(v),eta)*dx_f
 
 aF = aMF + aDF + aCF
 LF = LMF + LDF
 
+
 # ADD LINEAR AND BILINEAR FORMS
 a = aS+aF
 L = LS+LF
 
-t = dt
 
+
+t = dt
 count = 0
+accumulated = 0
+
 
 # TIME LOOP
-while t < T + DOLFIN_EPS:
-
+while t < T + DOLFIN_EPS:# and (abs(FdC) > 1e-3 or abs(FlC) > 1e-3):
 	if t < 1:
 		pressure.amp = 10*t
-	pressure.t = t
+	pressure.t=t
 	b = assemble(L)
 	eps = 10
 	k_iter = 0
 	max_iter = 5
 	while eps > 1E-6 and k_iter < max_iter:
-	    A = assemble(a)
-	    A.ident_zeros()
-	    [bc.apply(A,b) for bc in bcv]
-	    [bc.apply(A,b) for bc in bcw]
-	    solve(A,VPW_.vector(),b,'lu')
-	    v_,p_,w_ = VPW_.split(True)
-	    eps = errornorm(v_,v0,degree_rise=3)
-	    k_iter += 1
-	    print 'k: ',k_iter, 'error: %.3e' %eps
-	    v0.assign(v_)
-	if count%5==0:		# save every fifth state
+		A = assemble(a)
+		A.ident_zeros()
+		[bc.apply(A,b) for bc in bcv]
+		[bc.apply(A,b) for bc in bcw]
+		solve(A,VPW_.vector(),b,'lu')
+		v_,p_,w_ = VPW_.split(True)
+		eps = errornorm(v_,v0,degree_rise=3)
+		k_iter += 1
+		print 'k: ',k_iter, 'error: %.3e' %eps
+		v0.assign(v_)
+		w0.assign(w_)
+	q.vector()[:] = v_.vector()[:]
+	q.vector()[:] -= w_.vector()[:]    # q = v - w
+	if count%5==0:
+		qfile << q
 		ufile << v_
 		pfile << p_
 		dfile << w_
-		tfile << U1
+		tfile << U
 
-	
+	v1.assign(v_)
+	w1.assign(w_)
+
 	w_.vector()[:] *= float(k)
-	U1.vector()[:] += w_.vector()[:]
-	ALE.move(mesh,w_)
+	U.vector()[:] += w_.vector()[:]
+	mesh.move(w_)
 	mesh.bounding_box_tree().build(mesh)
 
-	# Move to next time step
-	v1.assign(v_)
-	print 't=%.4f'%t
+	flow = assemble(dot(q('+'),n('+'))*dS(8))
+	accumulated += flow
+	
 	t += dt
 	count += 1
+	print '%g %g %g'%(t, flow,accumulated)
+

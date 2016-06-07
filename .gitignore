@@ -55,6 +55,8 @@ coverage.xml
 # Extensions:
 *~
 *.pyc
+*.vtu
+*.pvd
 
 # Sphinx documentation
 docs/_build/
