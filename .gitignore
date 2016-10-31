@@ -43,7 +43,6 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *,cover
-.hypothesis/
 
 # Translations
 *.mo
@@ -52,17 +51,20 @@ coverage.xml
 # Django stuff:
 *.log
 
-# Extensions:
-*~
-*.pyc
-*.vtu
-*.pvd
-
 # Sphinx documentation
 docs/_build/
 
 # PyBuilder
 target/
 
-#Ipython Notebook
-.ipynb_checkpoints
+# Back-up files
+*~
+
+#vtu
+*.vtu
+*.pvd
+*.png
+*.xdmf
+*.h5
+*.pvtu
+*.pyc
